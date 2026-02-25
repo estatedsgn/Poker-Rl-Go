@@ -1,0 +1,6 @@
+# Runtime dependencies for training/evaluation scripts
+numpy>=1.24
+
+# Optional backends (install when available in your environment)
+# torch>=2.2
+# rlcard>=1.0

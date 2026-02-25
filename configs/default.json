@@ -1,0 +1,36 @@
+{
+  "train": {
+    "steps": 200,
+    "batch_size": 128,
+    "obs_dim": 128,
+    "num_actions": 16,
+    "lr": 0.0003,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "grad_clip_norm": 1.0,
+    "checkpoint_interval": 50,
+    "out_dir": "checkpoints",
+    "seed": 42,
+    "backend": "synthetic",
+    "gae_gamma": 0.99,
+    "gae_lambda": 0.95,
+    "ppo_clip_ratio": 0.2,
+    "ppo_epochs": 2,
+    "mini_batch_size": 64,
+    "eval_hands": 0,
+    "eval_seed_start": 42,
+    "eval_num_seeds": 0,
+    "selection_metric": "mean",
+    "selection_ci_penalty": 1.0,
+    "early_stop_patience_checkpoints": 0
+  },
+  "eval": {
+    "checkpoint": null,
+    "obs_dim": 128,
+    "num_actions": 16,
+    "hands": 200,
+    "seed": 42,
+    "seed_start": 42,
+    "num_seeds": 3
+  }
+}
