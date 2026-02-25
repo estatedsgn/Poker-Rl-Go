@@ -16,7 +16,7 @@
 - `src/competitive_env_config.py` — конфигурация более соревновательной NLHE-среды (блайнды/анте/рейк/action abstraction/raise ladder).
 - `src/self_play_league.py` — league-training утилиты: snapshot pool, Elo-апдейты, PFSP-сэмплинг оппонентов и промоут новых чекпоинтов.
 - `src/rlcard_nlhe_env.py` — подключение реальной среды RLCard (`no-limit-holdem`) для сбора батчей из настоящих раздач и evaluation по рукам.
-- `train.py` — обучение (backend `synthetic|rlcard`, GAE(λ), checkpointing, league bookkeeping).
+- `train.py` — обучение (backend `synthetic|rlcard`, GAE(λ), PPO minibatch updates (clip objective), checkpointing, league bookkeeping).
 - `evaluate.py` — оценка чекпоинта в RLCard по средней выплате на руку.
 - `evaluate_pool.py` — ранжирование пула чекпоинтов по средней выплате на руку.
 - `configs/default.json` — воспроизводимый базовый конфиг для train/eval.

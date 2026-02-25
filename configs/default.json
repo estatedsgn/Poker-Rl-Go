@@ -13,7 +13,10 @@
     "seed": 42,
     "backend": "synthetic",
     "gae_gamma": 0.99,
-    "gae_lambda": 0.95
+    "gae_lambda": 0.95,
+    "ppo_clip_ratio": 0.2,
+    "ppo_epochs": 2,
+    "mini_batch_size": 64
   },
   "eval": {
     "checkpoint": null,

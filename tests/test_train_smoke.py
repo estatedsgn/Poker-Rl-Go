@@ -2,7 +2,14 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from train import TrainConfig, choose_action_from_logits, compute_gae, run_training
+from train import (
+    TrainConfig,
+    choose_action_from_logits,
+    compute_gae,
+    masked_log_prob_actions,
+    ppo_policy_loss,
+    run_training,
+)
 
 
 def test_choose_action_from_logits_respects_legal_actions():
@@ -23,6 +30,19 @@ def test_compute_gae_shapes_and_returns_relation():
     assert torch.allclose(returns, advantages + values)
 
 
+def test_masked_log_prob_and_ppo_loss_shapes():
+    logits = torch.tensor([[2.0, 1.0, -1.0], [0.5, 0.1, 0.0]])
+    actions = torch.tensor([0, 2], dtype=torch.long)
+    mask = torch.tensor([[1, 1, 0], [1, 0, 1]], dtype=torch.bool)
+    old_lp = torch.tensor([-0.2, -0.5])
+    adv = torch.tensor([1.0, -1.0])
+
+    new_lp = masked_log_prob_actions(logits, actions, mask)
+    loss = ppo_policy_loss(new_lp, old_lp, adv, clip_ratio=0.2)
+    assert new_lp.shape == torch.Size([2])
+    assert loss.dim() == 0
+
+
 def test_run_training_smoke(tmp_path):
     cfg = TrainConfig(
         steps=4,
@@ -33,6 +53,8 @@ def test_run_training_smoke(tmp_path):
         out_dir=str(tmp_path / "ckpts"),
         seed=123,
         backend="synthetic",
+        ppo_epochs=1,
+        mini_batch_size=4,
     )
     metrics = run_training(cfg)
 

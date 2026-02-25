@@ -38,6 +38,9 @@ class TrainConfig:
     backend: str = "synthetic"  # synthetic | rlcard
     gae_gamma: float = 0.99
     gae_lambda: float = 0.95
+    ppo_clip_ratio: float = 0.2
+    ppo_epochs: int = 2
+    mini_batch_size: int = 64
 
     @staticmethod
     def from_dict(data: Dict) -> "TrainConfig":
@@ -96,6 +99,26 @@ def compute_gae(rewards, values, dones, gamma: float, lam: float):
         next_value = values[t]
     returns = adv + values
     return adv, returns
+
+
+def masked_log_prob_actions(logits: "torch.Tensor", actions: "torch.Tensor", action_mask: "torch.Tensor") -> "torch.Tensor":
+    """Return log-probabilities of selected actions under masked logits."""
+    neg_inf = torch.finfo(logits.dtype).min
+    masked_logits = torch.where(action_mask.bool(), logits, neg_inf)
+    log_probs = torch.log_softmax(masked_logits, dim=-1)
+    return log_probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+
+
+def ppo_policy_loss(
+    new_log_probs: "torch.Tensor",
+    old_log_probs: "torch.Tensor",
+    advantages: "torch.Tensor",
+    clip_ratio: float,
+) -> "torch.Tensor":
+    ratio = torch.exp(new_log_probs - old_log_probs)
+    unclipped = ratio * advantages
+    clipped = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * advantages
+    return -torch.min(unclipped, clipped).mean()
 
 
 class SyntheticNLHEBatchGenerator:
@@ -164,6 +187,12 @@ def _save_checkpoint(model: TinyActorCritic, out_dir: Path, step: int) -> Path:
     return ckpt_path
 
 
+def _iter_minibatches(total_size: int, mini_batch_size: int):
+    perm = torch.randperm(total_size)
+    for start in range(0, total_size, mini_batch_size):
+        yield perm[start : start + mini_batch_size]
+
+
 def run_training(cfg: TrainConfig) -> Dict[str, float]:
     if torch is None:
         raise ImportError("PyTorch is required to run train.py")
@@ -188,38 +217,58 @@ def run_training(cfg: TrainConfig) -> Dict[str, float]:
     for step in range(1, cfg.steps + 1):
         batch = batch_gen.sample()
 
-        logits, values = model(batch["obs"])
-        baseline_values = values.squeeze(-1).detach()
-        advantages, returns = compute_gae(
-            rewards=batch["rewards"],
-            values=baseline_values,
-            dones=batch["dones"],
-            gamma=cfg.gae_gamma,
-            lam=cfg.gae_lambda,
-        )
+        with torch.no_grad():
+            old_logits, old_values = model(batch["obs"])
+            old_log_probs = masked_log_prob_actions(old_logits, batch["actions"], batch["action_mask"])
+            advantages, returns = compute_gae(
+                rewards=batch["rewards"],
+                values=old_values.squeeze(-1),
+                dones=batch["dones"],
+                gamma=cfg.gae_gamma,
+                lam=cfg.gae_lambda,
+            )
+            adv_std = advantages.std().clamp(min=1e-6)
+            advantages = (advantages - advantages.mean()) / adv_std
 
-        adv_std = advantages.std().clamp(min=1e-6)
-        advantages = (advantages - advantages.mean()) / adv_std
+        last_parts = None
+        last_train_metrics = None
+        for _ in range(cfg.ppo_epochs):
+            for mb_idx in _iter_minibatches(batch["obs"].shape[0], cfg.mini_batch_size):
+                mb_obs = batch["obs"][mb_idx]
+                mb_actions = batch["actions"][mb_idx]
+                mb_mask = batch["action_mask"][mb_idx]
+                mb_adv = advantages[mb_idx]
+                mb_ret = returns[mb_idx]
+                mb_old_lp = old_log_probs[mb_idx]
 
-        loss, parts = total_actor_critic_loss(
-            logits=logits,
-            actions=batch["actions"],
-            advantages=advantages,
-            values=values,
-            returns=returns,
-            action_mask=batch["action_mask"],
-            value_coef=cfg.value_coef,
-            entropy_coef=cfg.entropy_coef,
-        )
-        train_metrics = backpropagation_step(model, optimizer, loss, grad_clip_norm=cfg.grad_clip_norm)
+                logits, values = model(mb_obs)
+                new_log_probs = masked_log_prob_actions(logits, mb_actions, mb_mask)
+                ppo_pol = ppo_policy_loss(new_log_probs, mb_old_lp, mb_adv, cfg.ppo_clip_ratio)
 
+                _, parts = total_actor_critic_loss(
+                    logits=logits,
+                    actions=mb_actions,
+                    advantages=mb_adv,
+                    values=values,
+                    returns=mb_ret,
+                    action_mask=mb_mask,
+                    value_coef=cfg.value_coef,
+                    entropy_coef=cfg.entropy_coef,
+                )
+
+                total_loss = ppo_pol + cfg.value_coef * parts["value_loss"] - cfg.entropy_coef * parts["entropy"]
+                train_metrics = backpropagation_step(model, optimizer, total_loss, grad_clip_norm=cfg.grad_clip_norm)
+                last_parts = parts
+                last_train_metrics = train_metrics
+
+        assert last_parts is not None and last_train_metrics is not None
         latest_metrics = {
             "step": float(step),
-            "loss": train_metrics["loss"],
-            "grad_norm": train_metrics["grad_norm"],
-            "policy_loss": float(parts["policy_loss"].detach().item()),
-            "value_loss": float(parts["value_loss"].detach().item()),
-            "entropy": float(parts["entropy"].detach().item()),
+            "loss": last_train_metrics["loss"],
+            "grad_norm": last_train_metrics["grad_norm"],
+            "policy_loss": float(ppo_pol.detach().item()),
+            "value_loss": float(last_parts["value_loss"].detach().item()),
+            "entropy": float(last_parts["entropy"].detach().item()),
         }
 
         if step % cfg.checkpoint_interval == 0 or step == cfg.steps:
@@ -256,6 +305,9 @@ def parse_args() -> TrainConfig:
     p.add_argument("--backend", type=str, choices=["synthetic", "rlcard"], default="synthetic")
     p.add_argument("--gae-gamma", type=float, default=0.99)
     p.add_argument("--gae-lambda", type=float, default=0.95)
+    p.add_argument("--ppo-clip-ratio", type=float, default=0.2)
+    p.add_argument("--ppo-epochs", type=int, default=2)
+    p.add_argument("--mini-batch-size", type=int, default=64)
     p.add_argument("--config", type=str, default=None)
     args = p.parse_args()
 
@@ -274,6 +326,9 @@ def parse_args() -> TrainConfig:
         backend=args.backend,
         gae_gamma=args.gae_gamma,
         gae_lambda=args.gae_lambda,
+        ppo_clip_ratio=args.ppo_clip_ratio,
+        ppo_epochs=args.ppo_epochs,
+        mini_batch_size=args.mini_batch_size,
     )
 
 
